@@ -1,0 +1,140 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.ticker import FuncFormatter
+import re
+import nltk
+from nltk.corpus import stopwords
+import sklearn
+from sklearn.metrics import accuracy_score, classification_report
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+#nltk.download('stopwords') habilitar se necessário
+
+#Carregando a base de dados
+df = pd.read_csv('Movies_Reviews_modified_version1.csv')
+###print(df.info()) Reabilitar no notebook
+
+#Descartando as colunas que não serão usadas
+df.drop(columns=['Resenhas', 'Description'], inplace=True)
+
+#Criaremos uma coluna na tabela chamada "Positivo/Negativo"
+#As críticas que deram nota 6 ou superior serão consideradas positivas
+#As críticas que deram nota inferior a 6 serão consideradas negativas
+def positivoNegativo(rating):
+    if rating>=6:
+        return "Positivo"
+    else:
+        return "Negativo"
+   
+df['Positivo/Negativo'] = df["Ratings"].apply(positivoNegativo)
+
+
+#Tratamento da base de dados (pré-processamento)
+#Removeremos palavras comuns, como pronomes, artigos, verbos auxiliares, etc. com as "stop words"
+#Converteremos todo o texto para letras minúsculas, dessa forma a mesma palavra não será contada de forma separada na vetorização caso apareça com letra maiúscula.
+#Removeremos pontuação.
+#Removeremos linhas com a review duplicada.
+#O texto pré-processado será incluído em uma nova coluna que chamaremos de "review tratado"
+
+stop_words = set(stopwords.words("english"))
+stop_words.discard('no')
+stop_words.discard('not')
+
+def limpar_texto(texto):
+    texto = texto.lower()
+    texto = re.sub(r'[^a-zA-Z\s]', '', texto)
+    palavras = texto.split()
+    palavras = [p for p in palavras if p not in stop_words]
+    return " ".join(palavras)
+
+df = df.drop_duplicates(subset="Reviews", keep="first")
+df["review tratado"] = df["Reviews"].apply(limpar_texto)
+
+
+
+#Faremos a vetorização do texto, usando um vetor TF-IDF considerando o n-gram de até 2 palavras.
+#Ou seja, faremos uma matriz para contar a repetição de palavras e sequências de 2 palavras.
+#Aumentar o tamanho da matriz (features) melhora resultados, mas aumenta o tempo de processamento
+#Aumentar o tamanho das expressões (n-gram) pode até aumentar a acurácia, mas aumenta o tamanho da matriz de forma exponencial.
+vectorizer = TfidfVectorizer(max_features=20000,  ngram_range=(1,2))
+
+
+#Usaremos um modelo de regressão que usará a matriz criada como variável independente e a coluna Positivo/Negativo como variável dependente
+#A base de dados será dividida entre linhas usadas para treino e o restante para ter o modelo aplicado e posteriormente avaliado.
+#80% da base será usada para treinar o modelo, e ele será aplicado sobre os 20% restantes.
+X = vectorizer.fit_transform(df["review tratado"])
+y = df["Positivo/Negativo"]
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=1
+)
+predicao_opiniao = LogisticRegression(max_iter=1000)
+predicao_opiniao.fit(X_train, y_train)
+y_pred = predicao_opiniao.predict(X_test)
+
+#Para medir a acurácia que o modelo conseguiu, compraremos os positivos/negativos encontrados com os tabelados.
+print("Acurácia:", accuracy_score(y_test, y_pred))
+print(classification_report(y_test, y_pred))
+
+'''
+Resultado:
+O teste de acurácia retornou que 84,00% das predições foram corretas
+O relatório de classificação retornou os seguintes valores:
+              precision    recall  f1-score   support
+    Negativo       0.85      0.76      0.80      1654
+    Positivo       0.83      0.90      0.87      2210
+    weighted avg   0.84      0.84      0.84      3864
+
+Significando que:
+ -Precision:
+ - Quando o modelo aponta que uma review é POSITIVA, ele acerta em 83% das vezes.
+ - Quando o modelo aponta que uma review é NEGATIVA, ele acerta em 85% das vezes.
+
+ -Recall:
+ - O modelo acertou 90% das reviews POSITIVAS.
+ - O modelo acertou 76% das reviews NEGATIVAS.
+
+ Verificamos aqui que a maior dificuldade do modelo, por enquanto, é acertar quando a review é negativa.
+'''
+
+#Incluiremos no dataframe uma coluna com a opinião prevista pelo modelo.
+#Incluiremos uma coluna dizendo se o modelo acertou ou não sua previsão.
+df["Opinião prevista"] = predicao_opiniao.predict(X)
+df["Modelo Acertou"] = df["Positivo/Negativo"] == df["Opinião prevista"]
+erros = df[df["Modelo Acertou"]==False]
+###print(erros.info()) Reabilitar no notebook
+
+
+#Fazendo um histograma para ilustrar a distribuição dos erros:
+sns.histplot(erros["Ratings"], bins=range(12), stat="percent", discrete=True)
+plt.xticks(range(11))
+plt.title("Distribuição dos Ratings onde o modelo errou(%)")
+plt.xlabel("Ratings")
+plt.ylabel("Porcentagem")
+plt.gca().yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{y:.0f}%'))
+plt.show()
+
+#Analisando a distribuição dos erros:
+percentuais = erros["Ratings"].value_counts(normalize=True).sort_index() * 100
+percentuais_formatado = percentuais.map(lambda x: f"{x:.1f}%")
+print(percentuais_formatado)
+
+'''
+Tabelando os erros:
+Ratings
+1.0      2.2%
+2.0      6.5%
+3.0      9.9%
+4.0     16.1%
+5.0     30.7%
+6.0     18.5%
+7.0      7.1%
+8.0      3.4%
+9.0      2.2%
+10.0     3.4%
+
+Conseguimos perceber que os erros estão majoritariamente na região de ratings de 4 a 6 (65,3%).
+Esse erro faz muito sentido, pois nessa região intermediária a classificação binária (Positivo/Negativo) não representa as opiniões neutras.
+'''
